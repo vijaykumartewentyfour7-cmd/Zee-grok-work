@@ -1,0 +1,67 @@
+name: grok-review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch PR Diff
+        id: diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD > pr_diff.txt
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install openai PyGithub
+
+      - name: Run Grok Review
+        env:
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          import os
+          from openai import OpenAI
+          from github import Github
+
+          client = OpenAI(
+              api_key=os.environ["XAI_API_KEY"],
+              base_url="https://api.x.ai/v1",
+          )
+
+          with open("pr_diff.txt", "r") as f:
+              diff_text = f.read()[:8000]
+
+          if not diff_text.strip():
+              print("Empty diff, skipping review.")
+              exit(0)
+
+          response = client.chat.completions.create(
+              model="grok-beta",
+              messages=[
+                  {"role": "system", "content": "You are an expert code reviewer. Highlight bugs, security issues, and performance bottlenecks concisely."},
+                  {"role": "user", "content": f"Review this PR diff:\n\n{diff_text}"}
+              ]
+          )
+
+          review_comment = response.choices[0].message.content
+
+          gh = Github(os.environ["GITHUB_TOKEN"])
+          repo = gh.get_repo(os.environ["REPO_NAME"])
+          pr = repo.get_pull(int(os.environ["PR_NUMBER"]))
+          pr.create_issue_comment(f"### Grok PR Review\n\n{review_comment}")
+          
